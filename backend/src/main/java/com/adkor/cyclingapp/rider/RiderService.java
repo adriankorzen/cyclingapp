@@ -1,6 +1,8 @@
 package com.adkor.cyclingapp.rider;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,29 +19,30 @@ import lombok.RequiredArgsConstructor;
 public class RiderService {
 
 	private final RiderRepository riderRepository;
+	private final RiderThresholdService thresholdService;
 
 	public List<RiderResponse> findAll() {
 		return riderRepository.findAll().stream()
-				.map(RiderResponse::from)
+				.map(this::toResponse)
 				.toList();
 	}
 
 	public RiderResponse findById(Long id) {
-		return RiderResponse.from(getRider(id));
+		return toResponse(getRider(id));
 	}
 
 	@Transactional
 	public RiderResponse create(RiderRequest request) {
 		Rider rider = new Rider(request.name(), request.weightKg());
 		applyRequest(rider, request);
-		return RiderResponse.from(riderRepository.saveAndFlush(rider));
+		return toResponse(riderRepository.saveAndFlush(rider));
 	}
 
 	@Transactional
 	public RiderResponse update(Long id, RiderRequest request) {
 		Rider rider = getRider(id);
 		applyRequest(rider, request);
-		return RiderResponse.from(riderRepository.saveAndFlush(rider));
+		return toResponse(riderRepository.saveAndFlush(rider));
 	}
 
 	@Transactional
@@ -47,15 +50,22 @@ public class RiderService {
 		riderRepository.delete(getRider(id));
 	}
 
-	public ZonesResponse getZones(Long id) {
-		Rider rider = getRider(id);
-		List<TrainingZone> powerZones = rider.getFtpWatts() == null
-				? List.of()
-				: CogganZones.powerZones(rider.getFtpWatts());
-		List<TrainingZone> heartRateZones = rider.getLthrBpm() == null
-				? List.of()
-				: CogganZones.heartRateZones(rider.getLthrBpm());
-		return new ZonesResponse(rider.getFtpWatts(), rider.getLthrBpm(), powerZones, heartRateZones);
+	/**
+	 * Training zones from the thresholds valid on the given date.
+	 */
+	public ZonesResponse getZones(Long id, LocalDate date) {
+		getRider(id);
+		Optional<RiderThreshold> thresholds = thresholdService.timeline(id).at(date);
+		Integer ftp = thresholds.map(RiderThreshold::getFtpWatts).orElse(null);
+		Integer lthr = thresholds.map(RiderThreshold::getLthrBpm).orElse(null);
+		List<TrainingZone> powerZones = ftp == null ? List.of() : CogganZones.powerZones(ftp);
+		List<TrainingZone> heartRateZones = lthr == null ? List.of() : CogganZones.heartRateZones(lthr);
+		return new ZonesResponse(thresholds.map(RiderThreshold::getEffectiveFrom).orElse(null), ftp, lthr,
+				powerZones, heartRateZones);
+	}
+
+	private RiderResponse toResponse(Rider rider) {
+		return RiderResponse.from(rider, thresholdService.current(rider.getId()).orElse(null));
 	}
 
 	private Rider getRider(Long id) {
@@ -66,9 +76,6 @@ public class RiderService {
 	private static void applyRequest(Rider rider, RiderRequest request) {
 		rider.setName(request.name());
 		rider.setWeightKg(request.weightKg());
-		rider.setFtpWatts(request.ftpWatts());
-		rider.setLthrBpm(request.lthrBpm());
-		rider.setMaxHeartRateBpm(request.maxHeartRateBpm());
 		rider.setRestingHeartRateBpm(request.restingHeartRateBpm());
 	}
 

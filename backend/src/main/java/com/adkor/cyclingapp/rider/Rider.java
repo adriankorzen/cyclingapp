@@ -17,6 +17,10 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+/**
+ * Rider profile. Training thresholds (FTP, LTHR, max HR) change over time and are kept
+ * as a history in {@link RiderThreshold}.
+ */
 @Entity
 @Table(name = "rider")
 @Getter
@@ -33,17 +37,6 @@ public class Rider {
 
 	@Column(name = "weight_kg", nullable = false, precision = 5, scale = 2)
 	private BigDecimal weightKg;
-
-	/** Functional Threshold Power in watts. */
-	@Column(name = "ftp_watts")
-	private Integer ftpWatts;
-
-	/** Lactate Threshold Heart Rate in beats per minute. */
-	@Column(name = "lthr_bpm")
-	private Integer lthrBpm;
-
-	@Column(name = "max_heart_rate_bpm")
-	private Integer maxHeartRateBpm;
 
 	@Column(name = "resting_heart_rate_bpm")
 	private Integer restingHeartRateBpm;

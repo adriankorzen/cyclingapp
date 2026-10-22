@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.adkor.cyclingapp.TestcontainersConfiguration;
@@ -27,6 +29,8 @@ import com.adkor.cyclingapp.activity.ActivitySource;
 import com.adkor.cyclingapp.fit.FitTestFiles;
 import com.adkor.cyclingapp.rider.Rider;
 import com.adkor.cyclingapp.rider.RiderRepository;
+import com.adkor.cyclingapp.rider.RiderThreshold;
+import com.adkor.cyclingapp.rider.RiderThresholdRepository;
 
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -45,16 +49,20 @@ class ActivityAnalysisIntegrationTest {
 	@Autowired
 	private StoredAnalysisRepository storedAnalysisRepository;
 
+	@Autowired
+	private RiderThresholdRepository thresholdRepository;
+
 	private Rider rider;
 
 	@BeforeEach
 	void setUp() {
 		riderRepository.deleteAll();
-		rider = new Rider("Anna", new BigDecimal("60.0"));
-		rider.setFtpWatts(TestSessions.FTP);
-		rider.setLthrBpm(165);
-		rider.setMaxHeartRateBpm(180);
-		rider = riderRepository.save(rider);
+		rider = riderRepository.save(new Rider("Anna", new BigDecimal("60.0")));
+		RiderThreshold threshold = new RiderThreshold(rider, LocalDate.of(2026, 9, 1));
+		threshold.setFtpWatts(TestSessions.FTP);
+		threshold.setLthrBpm(165);
+		threshold.setMaxHeartRateBpm(180);
+		thresholdRepository.save(threshold);
 	}
 
 	@Test
@@ -103,20 +111,44 @@ class ActivityAnalysisIntegrationTest {
 	}
 
 	@Test
-	void reanalysesWithCurrentThresholds() throws Exception {
+	void newFtpTestOnlyAffectsActivitiesFromItsDate() throws Exception {
+		Long before = importIntervalSession("1", 10);
+		Long onTestDay = importIntervalSession("2", 20);
+		Long after = importIntervalSession("3", 21);
+		double tssAtOldFtp = tssOf(before);
+		Instant beforeAnalyzedAt = storedAnalysisRepository.findById(before).orElseThrow().getAnalyzedAt();
+
+		mockMvc.perform(post("/api/riders/{id}/thresholds", rider.getId())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+						{ "effectiveFrom": "2026-10-20", "ftpWatts": 300 }
+						"""))
+				.andExpect(status().isCreated());
+
+		StoredAnalysis unchanged = storedAnalysisRepository.findById(before).orElseThrow();
+		assertThat(unchanged.getFtpWatts()).isEqualTo(TestSessions.FTP);
+		assertThat(unchanged.getTrainingStressScore()).isEqualTo(tssAtOldFtp);
+		assertThat(unchanged.getAnalyzedAt()).isEqualTo(beforeAnalyzedAt);
+		for (Long activityId : new Long[] { onTestDay, after }) {
+			StoredAnalysis recalculated = storedAnalysisRepository.findById(activityId).orElseThrow();
+			assertThat(recalculated.getFtpWatts()).isEqualTo(300);
+			// LTHR carried over from the previous entry
+			assertThat(recalculated.getLthrBpm()).isEqualTo(165);
+			// Same ride at a higher FTP is relatively easier
+			assertThat(recalculated.getTrainingStressScore()).isLessThan(tssAtOldFtp);
+		}
+	}
+
+	@Test
+	void reanalysesWithThresholdsOfTheActivityDay() throws Exception {
 		Long activityId = importIntervalSession("1", 21);
-		double tssAtOldFtp = storedAnalysisRepository.findById(activityId).orElseThrow().getTrainingStressScore();
-		rider.setFtpWatts(300);
-		riderRepository.save(rider);
+		RiderThreshold later = new RiderThreshold(rider, LocalDate.of(2026, 10, 22));
+		later.setFtpWatts(320);
+		thresholdRepository.save(later);
 
 		mockMvc.perform(post("/api/activities/{id}/analysis", activityId))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.thresholds.ftpWatts").value(300));
-
-		StoredAnalysis stored = storedAnalysisRepository.findById(activityId).orElseThrow();
-		assertThat(stored.getFtpWatts()).isEqualTo(300);
-		// Same ride at a higher FTP is relatively easier
-		assertThat(stored.getTrainingStressScore()).isLessThan(tssAtOldFtp);
+				.andExpect(jsonPath("$.thresholds.ftpWatts").value(TestSessions.FTP));
 	}
 
 	@Test
@@ -178,6 +210,10 @@ class ActivityAnalysisIntegrationTest {
 		mockMvc.perform(get("/api/activities/{id}/analysis", 999_999)).andExpect(status().isNotFound());
 		mockMvc.perform(get("/api/riders/{id}/analyses", 999_999)).andExpect(status().isNotFound());
 		mockMvc.perform(post("/api/riders/{id}/analyses/refresh", 999_999)).andExpect(status().isNotFound());
+	}
+
+	private double tssOf(Long activityId) {
+		return storedAnalysisRepository.findById(activityId).orElseThrow().getTrainingStressScore();
 	}
 
 	private Long importIntervalSession(String externalId, int dayOfMonth) {

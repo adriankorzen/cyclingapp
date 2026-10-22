@@ -11,11 +11,12 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+/**
+ * Rider profile data. Training thresholds are managed separately as a history
+ * ({@code /api/riders/{id}/thresholds}).
+ */
 public record RiderRequest(
 		@NotBlank @Size(max = 100) String name,
 		@NotNull @DecimalMin("20.0") @DecimalMax("250.0") @Digits(integer = 3, fraction = 2) BigDecimal weightKg,
-		@Min(30) @Max(2500) Integer ftpWatts,
-		@Min(60) @Max(230) Integer lthrBpm,
-		@Min(80) @Max(240) Integer maxHeartRateBpm,
 		@Min(25) @Max(120) Integer restingHeartRateBpm) {
 }

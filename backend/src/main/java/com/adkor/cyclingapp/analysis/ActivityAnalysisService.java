@@ -2,8 +2,11 @@ package com.adkor.cyclingapp.analysis;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
@@ -20,16 +23,19 @@ import com.adkor.cyclingapp.activity.ActivityNotFoundException;
 import com.adkor.cyclingapp.activity.ActivityRepository;
 import com.adkor.cyclingapp.activity.ActivityService;
 import com.adkor.cyclingapp.fit.FitFileParser;
-import com.adkor.cyclingapp.rider.Rider;
 import com.adkor.cyclingapp.rider.RiderNotFoundException;
 import com.adkor.cyclingapp.rider.RiderRepository;
+import com.adkor.cyclingapp.rider.RiderThreshold;
+import com.adkor.cyclingapp.rider.RiderThresholdService;
+import com.adkor.cyclingapp.rider.ThresholdTimeline;
+import com.adkor.cyclingapp.rider.ThresholdsChangedEvent;
 
 import lombok.extern.slf4j.Slf4j;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Analyses activities and stores the results. New activities are analysed right after import,
- * relative to the rider's thresholds at that moment.
+ * Analyses activities and stores the results. Every activity is analysed relative to the rider's
+ * thresholds valid on the day of the activity, so a new FTP never changes the TSS of earlier rides.
  */
 @Slf4j
 @Service
@@ -39,17 +45,20 @@ public class ActivityAnalysisService {
 	private final ActivityService activityService;
 	private final StoredAnalysisRepository storedAnalysisRepository;
 	private final RiderRepository riderRepository;
+	private final RiderThresholdService thresholdService;
 	private final JsonMapper jsonMapper;
 	/** Every activity is analysed in its own transaction, so one failure does not affect the others. */
 	private final TransactionTemplate newTransaction;
 
 	public ActivityAnalysisService(ActivityRepository activityRepository, ActivityService activityService,
-			StoredAnalysisRepository storedAnalysisRepository, RiderRepository riderRepository, JsonMapper jsonMapper,
+			StoredAnalysisRepository storedAnalysisRepository, RiderRepository riderRepository,
+			RiderThresholdService thresholdService, JsonMapper jsonMapper,
 			PlatformTransactionManager transactionManager) {
 		this.activityRepository = activityRepository;
 		this.activityService = activityService;
 		this.storedAnalysisRepository = storedAnalysisRepository;
 		this.riderRepository = riderRepository;
+		this.thresholdService = thresholdService;
 		this.jsonMapper = jsonMapper;
 		this.newTransaction = new TransactionTemplate(transactionManager);
 		this.newTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -73,14 +82,15 @@ public class ActivityAnalysisService {
 	@Transactional(readOnly = true)
 	public ActivityAnalysisResponse analyzeAdHoc(Long activityId, Double targetWatts, DetectionOptions options) {
 		Activity activity = getActivity(activityId);
-		AthleteThresholds thresholds = thresholdsOf(activity.getRider(), targetWatts);
+		AthleteThresholds thresholds = thresholdsOn(activity, thresholdService.timeline(riderIdOf(activity)),
+				targetWatts);
 		ActivityAnalysis analysis = analyze(activityId, thresholds, options);
 		return new ActivityAnalysisResponse(activityId, false, Instant.now(), ActivityAnalyzer.VERSION, thresholds,
 				analysis);
 	}
 
 	/**
-	 * Recalculates and stores the analysis of an activity with the rider's current thresholds.
+	 * Recalculates and stores the analysis of an activity.
 	 */
 	@Transactional
 	public ActivityAnalysisResponse reanalyze(Long activityId) {
@@ -88,35 +98,35 @@ public class ActivityAnalysisService {
 	}
 
 	/**
-	 * Recalculates stored analyses of a rider's activities.
+	 * Brings the rider's stored analyses up to date: analyses activities that have no analysis, an outdated
+	 * one (older analyzer version) or one calculated with thresholds that are no longer valid for their day.
 	 *
-	 * @param all {@code true} recalculates every activity (e.g. after FTP changed), {@code false} only
-	 *            activities without an analysis or with an outdated one
+	 * @param all {@code true} recalculates every activity regardless
 	 */
 	public AnalysisRefreshResult refresh(Long riderId, boolean all) {
 		if (!riderRepository.existsById(riderId)) {
 			throw new RiderNotFoundException(riderId);
 		}
-		List<Long> activityIds = activityRepository.findByRiderIdOrderByStartTimeDesc(riderId).stream()
-				.map(Activity::getId)
-				.toList();
-		Map<Long, Integer> storedVersions = storedAnalysisRepository.findAllById(activityIds).stream()
-				.collect(Collectors.toMap(StoredAnalysis::getActivityId, StoredAnalysis::getAnalyzerVersion));
+		ThresholdTimeline timeline = thresholdService.timeline(riderId);
+		List<Activity> activities = activityRepository.findByRiderIdOrderByStartTimeDesc(riderId);
+		Map<Long, StoredAnalysis> stored = storedAnalysisRepository
+				.findAllById(activities.stream().map(Activity::getId).toList()).stream()
+				.collect(Collectors.toMap(StoredAnalysis::getActivityId, Function.identity()));
 
 		int analyzed = 0;
 		int skipped = 0;
 		int failed = 0;
-		for (Long activityId : activityIds) {
-			if (!all && Integer.valueOf(ActivityAnalyzer.VERSION).equals(storedVersions.get(activityId))) {
+		for (Activity activity : activities) {
+			if (!all && isUpToDate(stored.get(activity.getId()), thresholdsOn(activity, timeline, null))) {
 				skipped++;
 				continue;
 			}
 			try {
-				newTransaction.executeWithoutResult(status -> analyzeAndStore(activityId));
+				newTransaction.executeWithoutResult(status -> analyzeAndStore(activity.getId()));
 				analyzed++;
 			}
 			catch (RuntimeException ex) {
-				log.warn("Analysis of activity {} failed: {}", activityId, ex.getMessage());
+				log.warn("Analysis of activity {} failed: {}", activity.getId(), ex.getMessage());
 				failed++;
 			}
 		}
@@ -152,9 +162,26 @@ public class ActivityAnalysisService {
 		}
 	}
 
+	/**
+	 * Recalculates only the activities whose valid thresholds changed, e.g. a new FTP test affects
+	 * rides from its date until the next entry, earlier rides keep their results.
+	 */
+	@TransactionalEventListener(fallbackExecution = true)
+	public void onThresholdsChanged(ThresholdsChangedEvent event) {
+		refresh(event.riderId(), false);
+	}
+
+	private static boolean isUpToDate(StoredAnalysis stored, AthleteThresholds thresholds) {
+		return stored != null
+				&& stored.getAnalyzerVersion() == ActivityAnalyzer.VERSION
+				&& Objects.equals(stored.getFtpWatts(), thresholds.ftpWatts())
+				&& Objects.equals(stored.getLthrBpm(), thresholds.lthrBpm())
+				&& Objects.equals(stored.getMaxHeartRateBpm(), thresholds.maxHeartRateBpm());
+	}
+
 	private StoredAnalysis analyzeAndStore(Long activityId) {
 		Activity activity = getActivity(activityId);
-		AthleteThresholds thresholds = thresholdsOf(activity.getRider(), null);
+		AthleteThresholds thresholds = thresholdsOn(activity, thresholdService.timeline(riderIdOf(activity)), null);
 		ActivityAnalysis analysis = analyze(activityId, thresholds, DetectionOptions.AUTO);
 
 		StoredAnalysis stored = storedAnalysisRepository.findById(activityId)
@@ -198,8 +225,21 @@ public class ActivityAnalysisService {
 				.orElseThrow(() -> new ActivityNotFoundException(activityId));
 	}
 
-	private static AthleteThresholds thresholdsOf(Rider rider, Double targetWatts) {
-		return new AthleteThresholds(rider.getFtpWatts(), rider.getLthrBpm(), rider.getMaxHeartRateBpm(), targetWatts);
+	/** Thresholds valid on the (local) day the activity started. */
+	private static AthleteThresholds thresholdsOn(Activity activity, ThresholdTimeline timeline, Double targetWatts) {
+		LocalDate day = activity.getStartTimeLocal() != null
+				? activity.getStartTimeLocal().toLocalDate()
+				: LocalDate.ofInstant(activity.getStartTime(), ZoneOffset.UTC);
+		RiderThreshold threshold = timeline.at(day).orElse(null);
+		if (threshold == null) {
+			return new AthleteThresholds(null, null, null, targetWatts);
+		}
+		return new AthleteThresholds(threshold.getFtpWatts(), threshold.getLthrBpm(), threshold.getMaxHeartRateBpm(),
+				targetWatts);
+	}
+
+	private static Long riderIdOf(Activity activity) {
+		return activity.getRider().getId();
 	}
 
 }

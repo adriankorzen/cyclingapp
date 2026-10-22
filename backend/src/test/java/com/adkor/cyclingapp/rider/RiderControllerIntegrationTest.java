@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,9 +33,6 @@ class RiderControllerIntegrationTest {
 			{
 			  "name": "Jan Kowalski",
 			  "weightKg": 72.5,
-			  "ftpWatts": 250,
-			  "lthrBpm": 170,
-			  "maxHeartRateBpm": 190,
 			  "restingHeartRateBpm": 48
 			}
 			""";
@@ -44,6 +42,9 @@ class RiderControllerIntegrationTest {
 
 	@Autowired
 	private RiderRepository riderRepository;
+
+	@Autowired
+	private RiderThresholdRepository thresholdRepository;
 
 	@BeforeEach
 	void cleanDatabase() {
@@ -56,22 +57,34 @@ class RiderControllerIntegrationTest {
 				.andExpect(status().isCreated())
 				.andExpect(header().string("Location", endsWith("/api/riders/" + singleRiderId())))
 				.andExpect(jsonPath("$.name").value("Jan Kowalski"))
-				.andExpect(jsonPath("$.ftpWatts").value(250))
-				.andExpect(jsonPath("$.ftpWattsPerKg").value(3.45))
+				.andExpect(jsonPath("$.weightKg").value(72.5))
+				.andExpect(jsonPath("$.currentThresholds").doesNotExist())
 				.andExpect(jsonPath("$.createdAt").exists());
+	}
+
+	@Test
+	void showsCurrentThresholdsAndWattsPerKg() throws Exception {
+		Rider rider = saveRider("Anna");
+		saveThreshold(rider, LocalDate.now().minusDays(30), 230, 160);
+		saveThreshold(rider, LocalDate.now().minusDays(2), 250, 165);
+
+		mockMvc.perform(get("/api/riders/{id}", rider.getId()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.currentThresholds.ftpWatts").value(250))
+				.andExpect(jsonPath("$.ftpWattsPerKg").value(3.57));
 	}
 
 	@Test
 	void rejectsInvalidRider() throws Exception {
 		String invalid = """
-				{ "name": "", "weightKg": 10, "ftpWatts": -5 }
+				{ "name": "", "weightKg": 10, "restingHeartRateBpm": 5 }
 				""";
 
 		mockMvc.perform(post("/api/riders").contentType(MediaType.APPLICATION_JSON).content(invalid))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.errors.name").exists())
 				.andExpect(jsonPath("$.errors.weightKg").exists())
-				.andExpect(jsonPath("$.errors.ftpWatts").exists());
+				.andExpect(jsonPath("$.errors.restingHeartRateBpm").exists());
 	}
 
 	@Test
@@ -83,8 +96,8 @@ class RiderControllerIntegrationTest {
 
 	@Test
 	void listsRiders() throws Exception {
-		saveRider("Anna", 250);
-		saveRider("Piotr", 300);
+		saveRider("Anna");
+		saveRider("Piotr");
 
 		mockMvc.perform(get("/api/riders"))
 				.andExpect(status().isOk())
@@ -93,17 +106,17 @@ class RiderControllerIntegrationTest {
 
 	@Test
 	void updatesRider() throws Exception {
-		Long id = saveRider("Anna", 200).getId();
+		Long id = saveRider("Anna").getId();
 
 		mockMvc.perform(put("/api/riders/{id}", id).contentType(MediaType.APPLICATION_JSON).content(VALID_RIDER))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.name").value("Jan Kowalski"))
-				.andExpect(jsonPath("$.ftpWatts").value(250));
+				.andExpect(jsonPath("$.restingHeartRateBpm").value(48));
 	}
 
 	@Test
 	void deletesRider() throws Exception {
-		Long id = saveRider("Anna", 200).getId();
+		Long id = saveRider("Anna").getId();
 
 		mockMvc.perform(delete("/api/riders/{id}", id))
 				.andExpect(status().isNoContent());
@@ -112,24 +125,29 @@ class RiderControllerIntegrationTest {
 	}
 
 	@Test
-	void returnsCogganZones() throws Exception {
-		Rider rider = saveRider("Anna", 250);
-		rider.setLthrBpm(170);
-		riderRepository.save(rider);
+	void returnsCogganZonesForTheGivenDay() throws Exception {
+		Rider rider = saveRider("Anna");
+		saveThreshold(rider, LocalDate.of(2026, 9, 1), 250, 170);
+		saveThreshold(rider, LocalDate.of(2026, 10, 1), 280, 172);
 
-		mockMvc.perform(get("/api/riders/{id}/zones", rider.getId()))
+		mockMvc.perform(get("/api/riders/{id}/zones", rider.getId()).param("date", "2026-09-15"))
 				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.thresholdsEffectiveFrom").value("2026-09-01"))
+				.andExpect(jsonPath("$.ftpWatts").value(250))
 				.andExpect(jsonPath("$.powerZones", hasSize(7)))
 				.andExpect(jsonPath("$.powerZones[3].name").value("Lactate Threshold"))
 				.andExpect(jsonPath("$.powerZones[3].min").value(226))
 				.andExpect(jsonPath("$.powerZones[3].max").value(263))
 				.andExpect(jsonPath("$.heartRateZones", hasSize(5)))
 				.andExpect(jsonPath("$.heartRateZones[4].max").doesNotExist());
+
+		mockMvc.perform(get("/api/riders/{id}/zones", rider.getId()))
+				.andExpect(jsonPath("$.ftpWatts").value(280));
 	}
 
 	@Test
-	void returnsEmptyZonesWhenThresholdsAreMissing() throws Exception {
-		Rider rider = riderRepository.save(new Rider("Anna", new BigDecimal("60.0")));
+	void returnsEmptyZonesWithoutThresholds() throws Exception {
+		Rider rider = saveRider("Anna");
 
 		mockMvc.perform(get("/api/riders/{id}/zones", rider.getId()))
 				.andExpect(status().isOk())
@@ -137,10 +155,15 @@ class RiderControllerIntegrationTest {
 				.andExpect(jsonPath("$.heartRateZones", hasSize(0)));
 	}
 
-	private Rider saveRider(String name, int ftpWatts) {
-		Rider rider = new Rider(name, new BigDecimal("70.0"));
-		rider.setFtpWatts(ftpWatts);
-		return riderRepository.save(rider);
+	private Rider saveRider(String name) {
+		return riderRepository.save(new Rider(name, new BigDecimal("70.0")));
+	}
+
+	private void saveThreshold(Rider rider, LocalDate effectiveFrom, int ftpWatts, int lthrBpm) {
+		RiderThreshold threshold = new RiderThreshold(rider, effectiveFrom);
+		threshold.setFtpWatts(ftpWatts);
+		threshold.setLthrBpm(lthrBpm);
+		thresholdRepository.save(threshold);
 	}
 
 	private Long singleRiderId() {
