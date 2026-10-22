@@ -1,13 +1,16 @@
 package com.adkor.cyclingapp.analysis;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,76 +42,155 @@ class ActivityAnalysisIntegrationTest {
 	@Autowired
 	private ActivityService activityService;
 
-	private Long riderId;
+	@Autowired
+	private StoredAnalysisRepository storedAnalysisRepository;
+
+	private Rider rider;
 
 	@BeforeEach
 	void setUp() {
 		riderRepository.deleteAll();
-		Rider rider = new Rider("Anna", new BigDecimal("60.0"));
+		rider = new Rider("Anna", new BigDecimal("60.0"));
 		rider.setFtpWatts(TestSessions.FTP);
 		rider.setLthrBpm(165);
 		rider.setMaxHeartRateBpm(180);
-		riderId = riderRepository.save(rider).getId();
+		rider = riderRepository.save(rider);
 	}
 
 	@Test
-	void analysesStoredFitFileWithRiderThresholds() throws Exception {
-		double[][] session = TestSessions.intervalSession();
-		Long activityId = importActivity("1", FitTestFiles.cyclingActivity(session[0], session[1]));
+	void analysesActivityRightAfterImport() {
+		Long activityId = importIntervalSession("1", 21);
+
+		StoredAnalysis stored = storedAnalysisRepository.findById(activityId).orElseThrow();
+		assertThat(stored.getAnalyzerVersion()).isEqualTo(ActivityAnalyzer.VERSION);
+		assertThat(stored.getFtpWatts()).isEqualTo(TestSessions.FTP);
+		assertThat(stored.getTrainingStressScore()).isPositive();
+		assertThat(stored.getIntervalCount()).isEqualTo(TestSessions.REPEATS);
+	}
+
+	@Test
+	void returnsStoredAnalysis() throws Exception {
+		Long activityId = importIntervalSession("1", 21);
 
 		mockMvc.perform(get("/api/activities/{id}/analysis", activityId))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.sport").value("cycling"))
-				.andExpect(jsonPath("$.durationSeconds").value(session[0].length))
-				.andExpect(jsonPath("$.power.normalizedPower").isNumber())
-				.andExpect(jsonPath("$.powerZones", hasSize(7)))
-				.andExpect(jsonPath("$.heartRateZones", hasSize(5)))
-				.andExpect(jsonPath("$.intervals.detected").value(true))
-				.andExpect(jsonPath("$.intervals.blocks", hasSize(TestSessions.REPEATS)))
-				.andExpect(jsonPath("$.intervals.targetPower", closeTo(320.0, 10.0)));
+				.andExpect(jsonPath("$.stored").value(true))
+				.andExpect(jsonPath("$.analyzerVersion").value(ActivityAnalyzer.VERSION))
+				.andExpect(jsonPath("$.thresholds.ftpWatts").value(TestSessions.FTP))
+				.andExpect(jsonPath("$.analysis.sport").value("cycling"))
+				.andExpect(jsonPath("$.analysis.power.normalizedPower").isNumber())
+				.andExpect(jsonPath("$.analysis.powerZones", hasSize(7)))
+				.andExpect(jsonPath("$.analysis.heartRateZones", hasSize(5)))
+				.andExpect(jsonPath("$.analysis.intervals.detected").value(true))
+				.andExpect(jsonPath("$.analysis.intervals.blocks", hasSize(TestSessions.REPEATS)))
+				.andExpect(jsonPath("$.analysis.intervals.targetPower", closeTo(320.0, 10.0)));
 	}
 
 	@Test
-	void appliesManualDetectionSettings() throws Exception {
-		double[][] session = TestSessions.intervalSession();
-		Long activityId = importActivity("1", FitTestFiles.cyclingActivity(session[0], session[1]));
+	void analysesAdHocWithCustomSettingsWithoutStoring() throws Exception {
+		Long activityId = importIntervalSession("1", 21);
 
 		mockMvc.perform(get("/api/activities/{id}/analysis", activityId)
 				.param("relativeThreshold", "1.1")
 				.param("targetWatts", "300"))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.intervals.mode").value("MANUAL"))
-				.andExpect(jsonPath("$.intervals.targetSource").value("MANUAL"))
-				.andExpect(jsonPath("$.intervals.targetPower").value(300.0));
+				.andExpect(jsonPath("$.stored").value(false))
+				.andExpect(jsonPath("$.analysis.intervals.mode").value("MANUAL"))
+				.andExpect(jsonPath("$.analysis.intervals.targetSource").value("MANUAL"))
+				.andExpect(jsonPath("$.analysis.intervals.targetPower").value(300.0));
+
+		assertThat(storedAnalysisRepository.findById(activityId).orElseThrow().getResult()).doesNotContain("MANUAL");
+	}
+
+	@Test
+	void reanalysesWithCurrentThresholds() throws Exception {
+		Long activityId = importIntervalSession("1", 21);
+		double tssAtOldFtp = storedAnalysisRepository.findById(activityId).orElseThrow().getTrainingStressScore();
+		rider.setFtpWatts(300);
+		riderRepository.save(rider);
+
+		mockMvc.perform(post("/api/activities/{id}/analysis", activityId))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.thresholds.ftpWatts").value(300));
+
+		StoredAnalysis stored = storedAnalysisRepository.findById(activityId).orElseThrow();
+		assertThat(stored.getFtpWatts()).isEqualTo(300);
+		// Same ride at a higher FTP is relatively easier
+		assertThat(stored.getTrainingStressScore()).isLessThan(tssAtOldFtp);
+	}
+
+	@Test
+	void refreshesMissingAnalysesOrAll() throws Exception {
+		Long first = importIntervalSession("1", 20);
+		importIntervalSession("2", 21);
+		storedAnalysisRepository.deleteById(first);
+
+		mockMvc.perform(post("/api/riders/{id}/analyses/refresh", rider.getId()))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.analyzed").value(1))
+				.andExpect(jsonPath("$.skipped").value(1))
+				.andExpect(jsonPath("$.failed").value(0));
+
+		mockMvc.perform(post("/api/riders/{id}/analyses/refresh", rider.getId()).param("all", "true"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.analyzed").value(2))
+				.andExpect(jsonPath("$.skipped").value(0));
+	}
+
+	@Test
+	void listsSummariesWithinPeriod() throws Exception {
+		importIntervalSession("1", 10);
+		importIntervalSession("2", 20);
+		importIntervalSession("3", 21);
+
+		mockMvc.perform(get("/api/riders/{id}/analyses", rider.getId())
+				.param("from", "2026-10-15")
+				.param("to", "2026-10-21"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$", hasSize(2)))
+				.andExpect(jsonPath("$[0].startTimeLocal").value("2026-10-20T08:00:00"))
+				.andExpect(jsonPath("$[0].trainingStressScore").isNumber())
+				.andExpect(jsonPath("$[0].intervalCount").value(TestSessions.REPEATS))
+				.andExpect(jsonPath("$[1].startTimeLocal").value("2026-10-21T08:00:00"));
+	}
+
+	@Test
+	void importSucceedsEvenWhenAnalysisFails() throws Exception {
+		Long activityId = importActivity("2", 21, "corrupted".getBytes());
+
+		assertThat(storedAnalysisRepository.findById(activityId)).isEmpty();
+		mockMvc.perform(get("/api/activities/{id}/analysis", activityId))
+				.andExpect(status().isUnprocessableContent());
+		mockMvc.perform(post("/api/riders/{id}/analyses/refresh", rider.getId()))
+				.andExpect(jsonPath("$.failed").value(1));
 	}
 
 	@Test
 	void rejectsInvalidParameters() throws Exception {
-		Long activityId = importActivity("1", FitTestFiles.cyclingActivity(FitTestFiles.constant(60, 200), null));
+		Long activityId = importIntervalSession("1", 21);
 
 		mockMvc.perform(get("/api/activities/{id}/analysis", activityId).param("targetWatts", "-5"))
 				.andExpect(status().isBadRequest());
 	}
 
 	@Test
-	void returnsUnprocessableContentForCorruptedFile() throws Exception {
-		Long activityId = importActivity("2", "corrupted".getBytes());
-
-		mockMvc.perform(get("/api/activities/{id}/analysis", activityId))
-				.andExpect(status().isUnprocessableContent());
+	void returnsNotFoundForUnknownActivityOrRider() throws Exception {
+		mockMvc.perform(get("/api/activities/{id}/analysis", 999_999)).andExpect(status().isNotFound());
+		mockMvc.perform(get("/api/riders/{id}/analyses", 999_999)).andExpect(status().isNotFound());
+		mockMvc.perform(post("/api/riders/{id}/analyses/refresh", 999_999)).andExpect(status().isNotFound());
 	}
 
-	@Test
-	void returnsNotFoundForUnknownActivity() throws Exception {
-		mockMvc.perform(get("/api/activities/{id}/analysis", 999_999))
-				.andExpect(status().isNotFound());
+	private Long importIntervalSession(String externalId, int dayOfMonth) {
+		double[][] session = TestSessions.intervalSession();
+		return importActivity(externalId, dayOfMonth, FitTestFiles.cyclingActivity(session[0], session[1]));
 	}
 
-	private Long importActivity(String externalId, byte[] fitFile) {
+	private Long importActivity(String externalId, int dayOfMonth, byte[] fitFile) {
+		LocalDateTime startLocal = LocalDateTime.of(2026, 10, dayOfMonth, 8, 0);
 		ActivityData data = new ActivityData(ActivitySource.GARMIN, externalId, "Ride", "road_biking",
-				Instant.parse("2026-10-21T17:00:00Z"), null, null, null, null, null, null, null, null, null, null,
-				null, null);
-		return activityService.importActivity(riderId, data, "FIT", fitFile).id();
+				Instant.parse("2026-10-%02dT06:00:00Z".formatted(dayOfMonth)), startLocal, null, null, null, null,
+				null, null, null, null, null, null, null);
+		return activityService.importActivity(rider.getId(), data, "FIT", fitFile).id();
 	}
 
 }

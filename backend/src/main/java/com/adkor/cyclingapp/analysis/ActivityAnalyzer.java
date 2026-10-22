@@ -19,6 +19,12 @@ import com.adkor.cyclingapp.zone.CogganZones;
  */
 public final class ActivityAnalyzer {
 
+	/**
+	 * Version of the analysis algorithm. Bump it whenever the results change, so stored analyses
+	 * are recognised as outdated and recalculated.
+	 */
+	public static final int VERSION = 1;
+
 	private static final double VO2_MAX_HEART_RATE_FRACTION = 0.92;
 	private static final int BLOCK_EDGE_SECONDS = 30;
 

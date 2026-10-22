@@ -5,6 +5,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,6 +23,7 @@ public class ActivityService {
 	private final ActivityRepository activityRepository;
 	private final ActivityFileRepository activityFileRepository;
 	private final RiderRepository riderRepository;
+	private final ApplicationEventPublisher eventPublisher;
 
 	public List<ActivityResponse> findByRider(Long riderId) {
 		requireRider(riderId);
@@ -78,6 +80,7 @@ public class ActivityService {
 
 		if (fileContent != null) {
 			activityFileRepository.save(new ActivityFile(saved.getId(), fileFormat, fileContent));
+			eventPublisher.publishEvent(new ActivityImportedEvent(saved.getId(), riderId));
 		}
 		return ActivityResponse.from(saved);
 	}

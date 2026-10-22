@@ -60,16 +60,24 @@ already imported activities are skipped. The original FIT file of each activity 
 
 ### Activity analysis
 
-`GET /api/activities/{id}/analysis` analyses the stored FIT file relative to the rider's current FTP, LTHR
-and max HR:
+Every imported activity is analysed right away from its FIT file, relative to the rider's FTP, LTHR and
+max HR at that moment, and the result is stored:
 
 - Coggan power metrics: average power, NP, VI, IF, TSS, work (kJ)
 - time in Coggan power and heart rate zones
 - automatic detection of structured work blocks (interval sets), per-block power and HR,
   VO2max stimulus time (>= 92% of max HR) and cardiac drift
 
-Optional query parameters: `targetWatts` (reference power of the blocks, default is their median power) and
-`relativeThreshold`, `minDuration`, `maxGap` to force manual block detection instead of the automatic search.
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/activities/{id}/analysis` | stored analysis with the thresholds it was calculated with |
+| `GET /api/activities/{id}/analysis?targetWatts=…&relativeThreshold=…&minDuration=…&maxGap=…` | ad hoc analysis with custom block detection settings, not stored |
+| `POST /api/activities/{id}/analysis` | recalculate and store with the rider's current thresholds |
+| `POST /api/riders/{id}/analyses/refresh[?all=true]` | analyse activities without an (up to date) analysis; `all=true` recalculates everything, e.g. after an FTP change |
+| `GET /api/riders/{id}/analyses?from=YYYY-MM-DD&to=YYYY-MM-DD` | key metrics (TSS, IF, NP, ...) of analysed activities, last 90 days by default |
+
+Stored analyses carry the analyzer version (`ActivityAnalyzer.VERSION`); bump it when the algorithm changes
+and run a refresh to recalculate outdated results.
 
 ### Production profile
 
