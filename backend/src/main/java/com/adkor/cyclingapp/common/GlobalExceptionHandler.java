@@ -26,6 +26,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 		return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
 	}
 
+	@ExceptionHandler(ExternalServiceException.class)
+	ProblemDetail handleExternalService(ExternalServiceException ex) {
+		logger.warn("External service failure", ex);
+		return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, ex.getMessage());
+	}
+
 	@Override
 	protected @Nullable ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex,
 			HttpHeaders headers, HttpStatusCode status, WebRequest request) {

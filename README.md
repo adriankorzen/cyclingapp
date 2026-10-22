@@ -40,6 +40,24 @@ Integration tests start a throwaway PostgreSQL container with Testcontainers.
 Schema changes are Flyway migrations in `backend/src/main/resources/db/migration`
 (`V<version>__<description>.sql`). Hibernate only validates the schema.
 
+### Garmin Connect integration
+
+Activities are imported through the [Garmin Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/personal-api/)
+(personal, non-commercial use of your own data).
+
+1. Create a personal API key in Garmin Connect Web: Settings → Personal API Key.
+2. Expose it to the backend as the `GARMIN_API_KEY` environment variable.
+3. Sync cycling activities of a rider:
+
+```bash
+curl -X POST "http://localhost:8080/api/riders/1/garmin/sync"                  # since the latest imported activity
+curl -X POST "http://localhost:8080/api/riders/1/garmin/sync?since=2026-01-01" # from a given date
+```
+
+The first sync reaches back `garmin.personal-api.initial-sync-days` (30 by default). Re-running a sync is safe,
+already imported activities are skipped. The original FIT file of each activity is stored and available at
+`GET /api/activities/{id}/file`.
+
 ### Production profile
 
 Run with `SPRING_PROFILES_ACTIVE=prod` and provide `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`.

@@ -11,6 +11,15 @@ spring:
     compose:
       file: compose.yaml
 
+garmin:
+  personal-api:
+    base-url: https://personal.connectapi.garmin.com
+    api-key: ${GARMIN_API_KEY:}
+    # Garmin access tokens are valid for 24h; renew a bit earlier
+    token-ttl: 23h
+    # How far back the first sync of a rider reaches
+    initial-sync-days: 30
+
 management:
   endpoints:
     web:
