@@ -28,6 +28,7 @@
 	</scm>
 	<properties>
 		<java.version>25</java.version>
+		<garmin-fit.version>21.218.0</garmin-fit.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -57,6 +58,11 @@
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>com.garmin</groupId>
+			<artifactId>fit</artifactId>
+			<version>${garmin-fit.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.postgresql</groupId>

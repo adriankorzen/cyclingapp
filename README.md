@@ -58,6 +58,19 @@ The first sync reaches back `garmin.personal-api.initial-sync-days` (30 by defau
 already imported activities are skipped. The original FIT file of each activity is stored and available at
 `GET /api/activities/{id}/file`.
 
+### Activity analysis
+
+`GET /api/activities/{id}/analysis` analyses the stored FIT file relative to the rider's current FTP, LTHR
+and max HR:
+
+- Coggan power metrics: average power, NP, VI, IF, TSS, work (kJ)
+- time in Coggan power and heart rate zones
+- automatic detection of structured work blocks (interval sets), per-block power and HR,
+  VO2max stimulus time (>= 92% of max HR) and cardiac drift
+
+Optional query parameters: `targetWatts` (reference power of the blocks, default is their median power) and
+`relativeThreshold`, `minDuration`, `maxGap` to force manual block detection instead of the automatic search.
+
 ### Production profile
 
 Run with `SPRING_PROFILES_ACTIVE=prod` and provide `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`.
