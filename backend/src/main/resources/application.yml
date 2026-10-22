@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: cyclingapp
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Schema is owned by Flyway migrations; Hibernate only verifies it
+      ddl-auto: validate
+  # Locally the datasource is provided by compose.yaml (spring-boot-docker-compose)
+  docker:
+    compose:
+      file: compose.yaml
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
