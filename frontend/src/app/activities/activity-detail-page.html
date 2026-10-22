@@ -1,0 +1,191 @@
+<p><a routerLink="/activities">← Activities</a></p>
+
+@if (activity.error()) {
+  <div class="alert error">Activity not found.</div>
+}
+
+@if (activity.value(); as activity) {
+  <div class="page-header">
+    <div>
+      <h1>{{ activity.name ?? 'Activity' }}</h1>
+      <span class="muted">
+        {{ activity.startTimeLocal ?? activity.startTime | date: 'EEEE d MMMM y, HH:mm' }} · {{ sportLabel(activity.sportType) }}
+      </span>
+    </div>
+    <div class="toolbar">
+      <a class="button secondary" [href]="'/api/activities/' + activity.id + '/file'">Download FIT</a>
+      <button type="button" class="secondary" (click)="reanalyze()" [disabled]="reanalyzing()">
+        {{ reanalyzing() ? 'Analysing…' : 'Re-analyse' }}
+      </button>
+    </div>
+  </div>
+}
+
+@if (error(); as error) {
+  <div class="alert error">{{ error }}</div>
+}
+@if (analysis.error()) {
+  <div class="alert error">Analysis is not available for this activity.</div>
+}
+@if (analysis.isLoading() && !analysis.hasValue()) {
+  <p class="muted">Analysing…</p>
+}
+
+@if (analysis.value(); as result) {
+  @let a = result.analysis;
+  @let thresholds = result.thresholds;
+
+  <div class="stats">
+    <div class="stat"><div class="label">Duration</div><div class="value">{{ duration(a.durationSeconds) }}</div></div>
+    @if (a.distanceMeters) {
+      <div class="stat">
+        <div class="label">Distance</div>
+        <div class="value">{{ a.distanceMeters / 1000 | number: '1.1-1' }}<span class="unit">km</span></div>
+      </div>
+    }
+    @if (a.power; as power) {
+      <div class="stat">
+        <div class="label">TSS</div>
+        <div class="value">{{ power.trainingStressScore != null ? (power.trainingStressScore | number: '1.0-0') : '–' }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">IF</div>
+        <div class="value">{{ power.intensityFactor != null ? (power.intensityFactor | number: '1.2-2') : '–' }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">NP</div>
+        <div class="value">{{ power.normalizedPower | number: '1.0-0' }}<span class="unit">W</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Avg power</div>
+        <div class="value">{{ power.averagePower | number: '1.0-0' }}<span class="unit">W</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Max power</div>
+        <div class="value">{{ power.maxPower | number: '1.0-0' }}<span class="unit">W</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">VI</div>
+        <div class="value">{{ power.variabilityIndex != null ? (power.variabilityIndex | number: '1.2-2') : '–' }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Work</div>
+        <div class="value">{{ power.workKilojoules | number: '1.0-0' }}<span class="unit">kJ</span></div>
+      </div>
+    }
+    @if (a.heartRate; as hr) {
+      <div class="stat">
+        <div class="label">Avg HR</div>
+        <div class="value">{{ hr.average | number: '1.0-0' }}<span class="unit">bpm</span></div>
+      </div>
+      <div class="stat">
+        <div class="label">Max HR</div>
+        <div class="value">{{ hr.max | number: '1.0-0' }}<span class="unit">bpm</span></div>
+      </div>
+    }
+    @if (a.averageCadence) {
+      <div class="stat">
+        <div class="label">Cadence</div>
+        <div class="value">{{ a.averageCadence | number: '1.0-0' }}<span class="unit">rpm</span></div>
+      </div>
+    }
+  </div>
+
+  <p class="muted">
+    Calculated with FTP {{ thresholds.ftpWatts ?? '–' }} W · LTHR {{ thresholds.lthrBpm ?? '–' }} bpm ·
+    max HR {{ thresholds.maxHeartRateBpm ?? '–' }} bpm (thresholds valid on the day of the ride) ·
+    analysed {{ result.analyzedAt | date: 'd MMM y, HH:mm' }}
+  </p>
+
+  @if (!a.power) {
+    <div class="alert">No power data in this activity – power metrics and intervals are not available.</div>
+  }
+
+  <div class="grid-2">
+    <div class="card">
+      <h2>Power zones</h2>
+      @if (a.powerZones.length) {
+        <app-zone-bars [zones]="a.powerZones" color="var(--power)" />
+      } @else {
+        <p class="muted">{{ a.power ? 'Set your FTP in the profile to see power zones.' : 'No power data.' }}</p>
+      }
+    </div>
+    <div class="card">
+      <h2>Heart rate zones</h2>
+      @if (a.heartRateZones.length) {
+        <app-zone-bars [zones]="a.heartRateZones" color="var(--heart-rate)" />
+      } @else {
+        <p class="muted">{{ a.heartRate ? 'Set your LTHR in the profile to see heart rate zones.' : 'No heart rate data.' }}</p>
+      }
+    </div>
+  </div>
+
+  @if (a.intervals; as intervals) {
+    <div class="card">
+      <h2>Intervals</h2>
+      @if (intervals.detected) {
+        <p class="muted">
+          {{ intervals.blocks.length }} work blocks detected
+          @if (intervals.relativeThreshold) {
+            above {{ intervals.relativeThreshold | percent }} FTP
+          }
+          · target {{ intervals.targetPower | number: '1.0-0' }} W
+          ({{ intervals.targetSource === 'MANUAL' ? 'manual' : 'median of the blocks' }})
+          @if (intervals.totalVo2StimulusSeconds != null) {
+            · VO2max stimulus {{ duration(intervals.totalVo2StimulusSeconds) }} (≥ {{ intervals.vo2ThresholdBpm | number: '1.0-0' }} bpm)
+          }
+          @if (intervals.cardiacDriftPercent != null) {
+            · cardiac drift {{ intervals.cardiacDriftPercent | number: '1.1-1' }}%
+          }
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th class="right">Start</th>
+                <th class="right">Duration</th>
+                <th class="right">Avg power</th>
+                <th class="right">% target</th>
+                <th class="right">Max power</th>
+                <th class="right">HR start → end</th>
+                <th class="right">Max HR</th>
+                <th class="right">W/bpm</th>
+                <th class="right">VO2max time</th>
+                <th class="right">Dropouts</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (block of intervals.blocks; track block.number) {
+                <tr>
+                  <td>{{ block.number }}</td>
+                  <td class="right">{{ duration(block.startSecond) }}</td>
+                  <td class="right">{{ duration(block.durationSeconds) }}</td>
+                  <td class="right">{{ block.averagePower | number: '1.0-0' }} W</td>
+                  <td class="right">{{ block.percentOfTarget != null ? (block.percentOfTarget | number: '1.0-0') + '%' : '–' }}</td>
+                  <td class="right">{{ block.maxPower | number: '1.0-0' }} W</td>
+                  <td class="right">
+                    @if (block.heartRateStart != null) {
+                      {{ block.heartRateStart | number: '1.0-0' }} → {{ block.heartRateEnd | number: '1.0-0' }}
+                    } @else {
+                      –
+                    }
+                  </td>
+                  <td class="right">{{ block.maxHeartRate != null ? (block.maxHeartRate | number: '1.0-0') : '–' }}</td>
+                  <td class="right">{{ block.efficiency != null ? (block.efficiency | number: '1.2-2') : '–' }}</td>
+                  <td class="right">{{ block.vo2StimulusSeconds != null ? duration(block.vo2StimulusSeconds) : '–' }}</td>
+                  <td class="right">{{ block.dropoutSeconds }} s</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      } @else {
+        <p class="muted">
+          No structured interval set detected – efforts in this ride were too irregular to be planned repeats
+          (e.g. traffic lights or climbs), so it is treated as a steady or variable endurance ride.
+        </p>
+      }
+    </div>
+  }
+}

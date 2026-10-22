@@ -1,0 +1,28 @@
+<header class="topbar">
+  <a class="brand" routerLink="/">Cycling<span>App</span></a>
+
+  <nav>
+    <a routerLink="/activities" routerLinkActive="active">Activities</a>
+    <a routerLink="/profile" routerLinkActive="active">Profile</a>
+  </nav>
+
+  <div class="rider-switch">
+    @let riders = riderContext.riders.value();
+    @if (riders.length > 1) {
+      <select aria-label="Rider" [value]="riderContext.riderId()" (change)="onRiderChange($event)">
+        @for (rider of riders; track rider.id) {
+          <option [value]="rider.id">{{ rider.name }}</option>
+        }
+      </select>
+    } @else if (riderContext.rider(); as rider) {
+      <span class="rider-name">{{ rider.name }}</span>
+    }
+  </div>
+</header>
+
+<main class="page">
+  @if (riderContext.riders.error()) {
+    <div class="alert error">Cannot load riders – is the backend running on port 8080?</div>
+  }
+  <router-outlet />
+</main>

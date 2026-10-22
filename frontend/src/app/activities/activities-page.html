@@ -1,0 +1,94 @@
+@if (riderContext.riders.hasValue() && !riderContext.rider()) {
+  <div class="card">
+    <h2>Welcome</h2>
+    <p>Create your rider profile first, then sync your activities from Garmin Connect.</p>
+    <a class="button" routerLink="/profile">Create profile</a>
+  </div>
+} @else {
+  <div class="page-header">
+    <div>
+      <h1>Activities</h1>
+      <span class="muted">Training log with metrics calculated from your FIT files</span>
+    </div>
+    <div class="toolbar">
+      <label class="muted">From <input type="date" [value]="from()" [max]="to()" (change)="setFrom($event)" /></label>
+      <label class="muted">To <input type="date" [value]="to()" [min]="from()" (change)="setTo($event)" /></label>
+      <button type="button" (click)="sync()" [disabled]="syncing() || !riderContext.riderId()">
+        {{ syncing() ? 'Syncing…' : 'Sync from Garmin' }}
+      </button>
+    </div>
+  </div>
+
+  @if (message(); as message) {
+    <div class="alert" [class.success]="message.kind === 'success'" [class.error]="message.kind === 'error'">
+      {{ message.text }}
+    </div>
+  }
+
+  @let sum = totals();
+  <div class="stats">
+    <div class="stat"><div class="label">Rides</div><div class="value">{{ sum.rides }}</div></div>
+    <div class="stat"><div class="label">Time</div><div class="value">{{ duration(sum.seconds) }}</div></div>
+    <div class="stat">
+      <div class="label">Distance</div>
+      <div class="value">{{ sum.meters / 1000 | number: '1.0-0' }}<span class="unit">km</span></div>
+    </div>
+    <div class="stat"><div class="label">TSS</div><div class="value">{{ sum.tss | number: '1.0-0' }}</div></div>
+  </div>
+
+  <div class="card">
+    @if (activities.error() || summaries.error()) {
+      <div class="alert error">Cannot load activities.</div>
+    }
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th class="right">Duration</th>
+            <th class="right">Distance</th>
+            <th class="right">NP</th>
+            <th class="right">IF</th>
+            <th class="right">TSS</th>
+            <th class="right">Intervals</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of rows(); track row.activity.id) {
+            @let activity = row.activity;
+            @let summary = row.summary;
+            <tr class="clickable" (click)="open(activity.id)">
+              <td>{{ activity.startTimeLocal ?? activity.startTime | date: 'EEE d MMM y, HH:mm' }}</td>
+              <td>
+                <a [routerLink]="['/activities', activity.id]" (click)="$event.stopPropagation()">
+                  {{ activity.name ?? 'Activity' }}
+                </a>
+              </td>
+              <td>{{ sportLabel(activity.sportType) }}</td>
+              <td class="right">{{ duration(summary?.durationSeconds ?? activity.durationSeconds) }}</td>
+              <td class="right">
+                @if (activity.distanceMeters) {
+                  {{ activity.distanceMeters / 1000 | number: '1.1-1' }} km
+                } @else {
+                  –
+                }
+              </td>
+              <td class="right">{{ summary?.normalizedPower != null ? (summary!.normalizedPower | number: '1.0-0') + ' W' : '–' }}</td>
+              <td class="right">{{ summary?.intensityFactor != null ? (summary!.intensityFactor | number: '1.2-2') : '–' }}</td>
+              <td class="right">{{ summary?.trainingStressScore != null ? (summary!.trainingStressScore | number: '1.0-0') : '–' }}</td>
+              <td class="right">{{ summary?.intervalCount || '–' }}</td>
+            </tr>
+          } @empty {
+            <tr>
+              <td colspan="9" class="muted">
+                {{ activities.isLoading() ? 'Loading…' : 'No activities in this period. Use “Sync from Garmin” to import them.' }}
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+}

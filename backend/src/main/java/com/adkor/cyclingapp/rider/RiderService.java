@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,7 +23,7 @@ public class RiderService {
 	private final RiderThresholdService thresholdService;
 
 	public List<RiderResponse> findAll() {
-		return riderRepository.findAll().stream()
+		return riderRepository.findAll(Sort.by("id")).stream()
 				.map(this::toResponse)
 				.toList();
 	}
